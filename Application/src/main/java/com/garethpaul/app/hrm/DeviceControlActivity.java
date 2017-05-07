@@ -1,8 +1,11 @@
 package com.garethpaul.app.hrm;
 
 import android.app.Activity;
+import android.bluetooth.BluetoothAdapter;
+import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothGattCharacteristic;
 import android.bluetooth.BluetoothGattService;
+import android.bluetooth.BluetoothSocket;
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.Context;
@@ -15,14 +18,16 @@ import android.util.Log;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
-import android.widget.Button;
 import android.widget.ExpandableListView;
-import android.widget.SimpleExpandableListAdapter;
 import android.widget.TextView;
+import android.os.Handler;
 
+import java.io.IOException;
+import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.UUID;
 
 /**
  * For a given BLE device, this Activity provides the user interface to connect, display data,
@@ -40,6 +45,9 @@ public class DeviceControlActivity extends Activity {
     private TextView mDataField;
     private String mDeviceName;
     private String mDeviceAddress;
+    private BluetoothAdapter BA;
+    private BluetoothSocket btSocket = null;
+    private OutputStream outStream = null;
     private ExpandableListView mGattServicesList;
     private BluetoothLeService mBluetoothLeService;
     private ArrayList<ArrayList<BluetoothGattCharacteristic>> mGattCharacteristics =
@@ -49,6 +57,12 @@ public class DeviceControlActivity extends Activity {
 
     private final String LIST_NAME = "NAME";
     private final String LIST_UUID = "UUID";
+    private static String arduino = "30:14:06:19:02:32";
+    private static final UUID MY_UUID =
+            UUID.fromString("00001101-0000-1000-8000-00805F9B34FB");
+
+    private int mInterval = 30000; // delay to check hr value
+    private Handler mHandler = new Handler();
 
     // Code to manage Service lifecycle.
     private final ServiceConnection mServiceConnection = new ServiceConnection() {
@@ -62,6 +76,7 @@ public class DeviceControlActivity extends Activity {
             }
             // Automatically connects to the device upon successful start-up initialization.
             mBluetoothLeService.connect(mDeviceAddress);
+            connectToArduino();
         }
 
         @Override
@@ -147,6 +162,7 @@ public class DeviceControlActivity extends Activity {
         final Intent intent = getIntent();
         mDeviceName = intent.getStringExtra(EXTRAS_DEVICE_NAME);
         mDeviceAddress = intent.getStringExtra(EXTRAS_DEVICE_ADDRESS);
+        BA = BluetoothAdapter.getDefaultAdapter();
 
         // Sets up UI references.
         mDataField = (TextView) findViewById((com.garethpaul.app.hrm.R.id.data_value));
@@ -155,6 +171,7 @@ public class DeviceControlActivity extends Activity {
         getActionBar().setDisplayHomeAsUpEnabled(true);
         Intent gattServiceIntent = new Intent(this, BluetoothLeService.class);
         bindService(gattServiceIntent, mServiceConnection, BIND_AUTO_CREATE);
+        mHandler.postDelayed(runnable, mInterval);
     }
 
     @Override
@@ -163,6 +180,7 @@ public class DeviceControlActivity extends Activity {
         registerReceiver(mGattUpdateReceiver, makeGattUpdateIntentFilter());
         if (mBluetoothLeService != null) {
             final boolean result = mBluetoothLeService.connect(mDeviceAddress);
+            connectToArduino();
             Log.d(TAG, "Connect request result=" + result);
         }
     }
@@ -223,6 +241,30 @@ public class DeviceControlActivity extends Activity {
             mDataField.setText(data);
         }
     }
+
+    private void areWeSpeeding(){
+        String data  = mDataField.getText().toString();
+        if (data != null) {
+            int hr = Integer.parseInt(data);
+            if ((hr) < 100) {
+                Log.d(TAG, "Sending shock");
+                // Todo: set different behavior bases on the rate
+                Thread shockThread = new Thread(new Runnable() {
+                    public void run() {
+                        sendShock("1");
+                    }
+                });
+            }
+        }
+    }
+
+    private Runnable runnable = new Runnable() {
+        @Override
+        public void run() {
+            areWeSpeeding();
+            mHandler.postDelayed(this, mInterval);
+        }
+    };
 
     // Demonstrates how to iterate through the supported GATT Services/Characteristics.
     // In this sample, we populate the data structure that is bound to the ExpandableListView
@@ -302,5 +344,63 @@ public class DeviceControlActivity extends Activity {
         intentFilter.addAction(BluetoothLeService.ACTION_GATT_SERVICES_DISCOVERED);
         intentFilter.addAction(BluetoothLeService.ACTION_DATA_AVAILABLE);
         return intentFilter;
+    }
+
+    public void sendShock(String msg){
+        if (btSocket.isConnected()) {
+            try {
+                outStream.write(msg.getBytes());
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+
+    }
+
+    public void connectToArduino(){
+        // Set up a pointer to the remote node using it's address.
+        BluetoothDevice device = BA.getRemoteDevice(arduino);
+
+        if (btSocket != null) {
+            try {
+                btSocket.close();
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+        // Two things are needed to make a connection:
+        //   A MAC address, which we got above.
+        //   A Service ID or UUID.  In this case we are using the
+        //     UUID for SPP.
+        try {
+            btSocket = device.createRfcommSocketToServiceRecord(MY_UUID);
+        } catch (IOException e) {
+            Log.d(TAG, "Fatal Error In onResume() and socket create failed:" + e.getMessage());
+        }
+
+        // Discovery is resource intensive.  Make sure it isn't going on
+        // when you attempt to connect and pass your message.
+        BA.cancelDiscovery();
+
+        // Establish the connection.  This will block until it connects.
+        try {
+            btSocket.connect();
+        } catch (IOException e) {
+            Log.d(TAG, "Error! " + e.getMessage());
+            try {
+                btSocket.close();
+            } catch (IOException e2) {
+                Log.d(TAG, "Fatal Error In onResume() and unable to close socket during connection failure" + e2.getMessage());
+            }
+        }
+        if (btSocket.isConnected()){
+            Log.d(TAG, "Connected!");
+        }
+
+        try {
+            outStream = btSocket.getOutputStream();
+        } catch (IOException e) {
+            Log.d(TAG, "Output stream creation failed:" + e.getMessage());
+        }
     }
 }
