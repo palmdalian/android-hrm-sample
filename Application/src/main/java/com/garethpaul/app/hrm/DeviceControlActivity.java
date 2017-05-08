@@ -61,7 +61,10 @@ public class DeviceControlActivity extends Activity {
     private static final UUID MY_UUID =
             UUID.fromString("00001101-0000-1000-8000-00805F9B34FB");
 
-    private int mInterval = 30000; // delay to check hr value
+
+    private int currentHR;
+    private long failureTime;
+    private int mInterval = 1000; // delay to check hr value
     private Handler mHandler = new Handler();
 
     // Code to manage Service lifecycle.
@@ -151,6 +154,7 @@ public class DeviceControlActivity extends Activity {
     private void clearUI() {
         mDataField.setText(com.garethpaul.app
                 .hrm.R.string.no_data);
+        currentHR = 0;
     }
 
     @Override
@@ -171,7 +175,7 @@ public class DeviceControlActivity extends Activity {
         getActionBar().setDisplayHomeAsUpEnabled(true);
         Intent gattServiceIntent = new Intent(this, BluetoothLeService.class);
         bindService(gattServiceIntent, mServiceConnection, BIND_AUTO_CREATE);
-        mHandler.postDelayed(runnable, mInterval);
+        mHandler.postDelayed(runnable, 5000);
     }
 
     @Override
@@ -216,9 +220,11 @@ public class DeviceControlActivity extends Activity {
         switch(item.getItemId()) {
             case com.garethpaul.app.hrm.R.id.menu_connect:
                 mBluetoothLeService.connect(mDeviceAddress);
+                connectToArduino();
                 return true;
             case com.garethpaul.app.hrm.R.id.menu_disconnect:
                 mBluetoothLeService.disconnect();
+                disconnectArduino();
                 return true;
             case android.R.id.home:
                 onBackPressed();
@@ -239,22 +245,24 @@ public class DeviceControlActivity extends Activity {
     private void displayData(String data) {
         if (data != null) {
             mDataField.setText(data);
+            currentHR = Integer.parseInt(data);
         }
     }
 
     private void areWeSpeeding(){
-        String data  = mDataField.getText().toString();
-        if (data != null) {
-            int hr = Integer.parseInt(data);
-            if ((hr) < 100) {
+        if ((0 < currentHR) && (currentHR < 100)){
+            long currentTime = System.currentTimeMillis();
+            if (failureTime == 0) {
+                failureTime = currentTime;
+            } else if(currentTime - failureTime > 30000){
                 Log.d(TAG, "Sending shock");
                 // Todo: set different behavior bases on the rate
-                Thread shockThread = new Thread(new Runnable() {
-                    public void run() {
-                        sendShock("1");
-                    }
-                });
+                sendShock("1");
+                failureTime = 0;
             }
+        } else {
+            Log.d(TAG, "Resetting time");
+            failureTime = 0;
         }
     }
 
@@ -355,6 +363,17 @@ public class DeviceControlActivity extends Activity {
             }
         }
 
+    }
+
+    public void disconnectArduino(){
+        // Set up a pointer to the remote node using it's address.
+        if (btSocket != null) {
+            try {
+                btSocket.close();
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
     }
 
     public void connectToArduino(){
